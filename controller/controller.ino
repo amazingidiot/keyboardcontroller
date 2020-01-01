@@ -1,64 +1,94 @@
 // Max possible value for time measurement
 // https://www.pjrc.com/teensy/td_timing_millis.html
-const uint32_t TIME_MAX = 4294967295;
+static const uint32_t TIME_MAX = 4294967295;
 
-// Value for debouncing
-const uint32_t TIME_DEBOUNCE = 50000;
+// Value for debouncing in microseconds
+static const uint32_t TIME_DEBOUNCE = 5000;
 
 // microseconds between trigger_0 and trigger_1 for maximum velocity
 // increase value to reach maximum velocity easier
-const uint32_t TIME_NOTEON_MIN = 30;
+static const uint32_t NOTEON_TIME_MIN = 20;
 
 // microseconds between trigger_0 and trigger_1 for minimum velocity
 // decrease value to reach minimum velocity faster
-const uint32_t TIME_NOTEON_MAX = 60000;
+static const uint32_t NOTEON_TIME_MAX = 120000;
 
 // precalculate timing range
-const uint32_t TIME_NOTEON_RANGE = TIME_NOTEON_MAX - TIME_NOTEON_MIN;
+static const uint32_t NOTEON_TIME_RANGE = NOTEON_TIME_MAX - NOTEON_TIME_MIN;
+
+// Curve for the noteon velocity
+static const float NOTEON_VELOCITY_CURVE = 4.0f;
+
+// microseconds between trigger_0 and trigger_1 for maximum velocity
+// increase value to reach maximum velocity easier
+static const uint32_t NOTEOFF_TIME_MIN = 8000;
+
+// microseconds between trigger_0 and trigger_1 for minimum velocity
+// decrease value to reach minimum velocity faster
+static const uint32_t NOTEOFF_TIME_MAX = 150000;
+
+// precalculate timing range
+static const uint32_t NOTEOFF_TIME_RANGE = NOTEOFF_TIME_MAX - NOTEOFF_TIME_MIN;
+
+// Curve for the noteon velocity
+static const float NOTEOFF_VELOCITY_CURVE = 1.0f;
 
 // delay after digitalWrite() during scan_matrix()
-const uint32_t TIME_DELAY_SCANMATRIX = 2;
-
-// Curve for the velocity
-const float VELOCITY_CURVE_FACTOR = 3.0f;
+static const uint32_t TIME_DELAY_SCANMATRIX = 2;
 
 // T-Lines, see http://www.doepfer.de/DIY/Matrix_88.gif
-const uint8_t COUNT_T = 8;
+static const uint8_t COUNT_T = 8;
 // MK- and BR-Lines
-const uint8_t COUNT_MKBR = 11;
+static const uint8_t COUNT_MKBR = 11;
 
 // Number of keys
-const uint8_t KEY_COUNT = 88;
+static const uint8_t KEY_COUNT = 88;
 
 // MIDI-channel for all MIDI data
-const uint8_t MIDI_CHANNEL = 1;
+static const uint8_t MIDI_CHANNEL = 1;
 // key 0 is MIDI key 21
-const uint8_t MIDI_KEY_OFFSET = 21;
+static const uint8_t MIDI_KEY_OFFSET = 21;
 // resolution of MIDI High resolution
-const uint16_t MIDI_HIGHRES_RESOLUTION = 16348;
+static const uint16_t MIDI_HIGHRES_RESOLUTION = 16256;
 // Extended values for MIDI high resolution are send on controller 88
-const uint8_t MIDI_HIGHRES_CC = 88;
+static const uint8_t MIDI_HIGHRES_CC = 88;
+
+enum keystate {
+    UP,
+    GOING_DOWN,
+    DOWN,
+    GOING_UP
+};
 
 typedef struct {
-    uint32_t time;
-    uint32_t debounce;
+    // time between switch activations
+    uint32_t time = 0;
 
-    bool trigger_0 = false; // BR-Line
-    bool trigger_1 = false; // MK-Line
+    // Debounce-times
+    uint32_t debounce_0 = 0;
+    uint32_t debounce_1 = 0;
 
-    bool prev_trigger_0 = false; // previous value of trigger_0
-    bool prev_trigger_1 = false; // previous value of trigger_1
+    keystate state = UP;
 
+    // BR-Line, upper switches
+    bool trigger_0 = false;
+    // MK-Line, lower switches
+    bool trigger_1 = false;
+
+    // previous value of trigger_0
+    bool prev_trigger_0 = false;
+    // previous value of trigger_1
+    bool prev_trigger_1 = false;
 } keyboard_key_t;
 
 // Pins used for T-Lines
-const uint8_t T[COUNT_T] = { 23, 22, 21, 20,
+static const uint8_t T[COUNT_T] = { 23, 22, 21, 20,
     19, 18, 17, 16 };
 // Pins used for MK-Lines
-const uint8_t MK[COUNT_MKBR] = { 0, 2, 4, 6, 8, 10,
+static const uint8_t MK[COUNT_MKBR] = { 0, 2, 4, 6, 8, 10,
     12, 25, 27, 29, 32 };
 // Pins used for BR-Lines
-const uint8_t BR[COUNT_MKBR] = { 1, 3, 5, 7, 9, 11,
+static const uint8_t BR[COUNT_MKBR] = { 1, 3, 5, 7, 9, 11,
     24, 26, 28, 31, 30 };
 
 keyboard_key_t keys[KEY_COUNT];
@@ -77,6 +107,7 @@ void scan_matrix()
             // Set T-Line HIGH
             digitalWrite(T[T_LINE], HIGH);
             delayMicroseconds(TIME_DELAY_SCANMATRIX);
+
             // Read MK-Line
             keys[current_key].trigger_0 = digitalRead(BR[MKBR_LINE]);
 
@@ -85,59 +116,35 @@ void scan_matrix()
 
             // Set T-Line DOWN
             digitalWrite(T[T_LINE], LOW);
-
             delayMicroseconds(TIME_DELAY_SCANMATRIX);
+
             current_key++;
         }
     }
 }
 
-inline void save_key_time(int key) { keys[key].time = current_time; }
+inline void save_key_time(int key)
+{
+    keys[key].time = current_time;
+}
 
-inline void save_time_difference(int key)
+inline void save_time_difference(int key, uint32_t min, uint32_t max)
 {
     // Handle rollover of timer
     if (current_time < last_time) {
-        keys[key].time = constrain(TIME_MAX - keys[key].time + current_time,
-                             TIME_NOTEON_MIN, TIME_NOTEON_MAX)
-            - TIME_NOTEON_MIN;
+        keys[key].time = constrain(TIME_MAX - keys[key].time + current_time, min, max) - min;
     } else {
-        keys[key].time = constrain(current_time - keys[key].time,
-                             TIME_NOTEON_MIN, TIME_NOTEON_MAX)
-            - TIME_NOTEON_MIN;
+        keys[key].time = constrain(current_time - keys[key].time, min, max) - min;
     }
 }
 
-uint16_t calculate_midi_noteon_velocity(uint8_t key)
+uint16_t calculate_midi_velocity(uint8_t key, float velocity_curve, uint32_t time_range)
 {
-    float key_press_time = keys[key].time - TIME_NOTEON_MIN;
+    float midi_velocity = 1.0f - (float)(keys[key].time) / (float)(time_range); // Value between 0.0f and 1.0f
 
-    if (key_press_time < 0.0f)
-        key_press_time = 0.0f;
-    if (key_press_time > TIME_NOTEON_RANGE)
-        key_press_time = (float)TIME_NOTEON_RANGE;
+    midi_velocity = pow(midi_velocity, velocity_curve);
 
-    float midi_velocity = 1.0f - key_press_time / (float)(TIME_NOTEON_RANGE); // Value between 0.0f and 1.0f
-
-    midi_velocity = pow(midi_velocity, VELOCITY_CURVE_FACTOR);
-
-    return (uint16_t)(midi_velocity * (MIDI_HIGHRES_RESOLUTION - 128) + 128);
-}
-
-uint8_t calculate_midi_noteoff_velocity(uint8_t key)
-{
-    float key_press_time = keys[key].time - TIME_NOTEON_MIN;
-
-    if (key_press_time < 0.0f)
-        key_press_time = 0.0f;
-    if (key_press_time > TIME_NOTEON_RANGE)
-        key_press_time = (float)TIME_NOTEON_RANGE;
-
-    float midi_velocity = 1.0f - key_press_time / (float)(TIME_NOTEON_RANGE); // Value between 0.0f and 1.0f
-
-    midi_velocity = pow(midi_velocity, VELOCITY_CURVE_FACTOR);
-
-    return (uint8_t)(midi_velocity * 126 + 1);
+    return (uint16_t)(midi_velocity * (MIDI_HIGHRES_RESOLUTION) + 128);
 }
 
 void setup()
@@ -159,71 +166,56 @@ void loop()
 
     scan_matrix();
 
-#define NORMAL_MODE
-#ifdef SIMPLE_MODE
-    for (int i = 0; i < KEY_COUNT; i++) {
-        if (keys[i].trigger_1 && !keys[i].prev_trigger_1) {
-            usbMIDI.sendNoteOn(i + MIDI_KEY_OFFSET, 64, MIDI_CHANNEL);
-        }
-        if (!keys[i].trigger_1 && keys[i].prev_trigger_1) {
-            usbMIDI.sendNoteOff(i + MIDI_KEY_OFFSET, 64, MIDI_CHANNEL);
+    for (int key = 0; key < KEY_COUNT; key++) {
+        // Debounce and process keys
+
+        if (keys[key].debounce_0 < (current_time - TIME_DEBOUNCE)) {
+            if (keys[key].trigger_0 && !keys[key].prev_trigger_0 && keys[key].state == UP) {
+                // trigger_0 is pressed, key is going down
+                keys[key].prev_trigger_0 = true;
+                keys[key].debounce_0 = current_time;
+                keys[key].state = GOING_DOWN;
+
+                save_key_time(key);
+            } else if (!keys[key].trigger_0 && keys[key].prev_trigger_0 && keys[key].state == GOING_UP) {
+                // trigger_0 is released, key is now up
+                keys[key].prev_trigger_0 = false;
+                keys[key].debounce_0 = current_time;
+
+                keys[key].state = UP;
+
+                save_time_difference(key, NOTEOFF_TIME_MIN, NOTEOFF_TIME_MAX);
+
+                uint16_t velocity = calculate_midi_velocity(key, NOTEOFF_VELOCITY_CURVE, NOTEOFF_TIME_RANGE);
+
+                usbMIDI.sendControlChange(MIDI_HIGHRES_CC, (uint8_t)(velocity & 0x7f), MIDI_CHANNEL);
+                usbMIDI.sendNoteOff(key + MIDI_KEY_OFFSET, (uint8_t)(velocity >> 7), MIDI_CHANNEL);
+            }
         }
 
-        keys[i].prev_trigger_1 = keys[i].trigger_1;
+        if (keys[key].debounce_1 < (current_time - TIME_DEBOUNCE)) {
+            if (keys[key].trigger_1 && !keys[key].prev_trigger_1 && keys[key].state == GOING_DOWN) {
+                // trigger_1 is pressed, key is now down
+                keys[key].prev_trigger_1 = true;
+                keys[key].debounce_1 = current_time;
+                keys[key].state = DOWN;
+
+                save_time_difference(key, NOTEON_TIME_MIN, NOTEON_TIME_MAX);
+
+                uint16_t velocity = calculate_midi_velocity(key, NOTEON_VELOCITY_CURVE, NOTEON_TIME_RANGE);
+
+                usbMIDI.sendControlChange(MIDI_HIGHRES_CC, (uint8_t)(velocity & 0x7f), MIDI_CHANNEL);
+                usbMIDI.sendNoteOn(key + MIDI_KEY_OFFSET, (uint8_t)(velocity >> 7), MIDI_CHANNEL);
+            } else if (!keys[key].trigger_1 && keys[key].prev_trigger_1 && keys[key].state == DOWN) {
+                // trigger_1 is released, key is going up
+                keys[key].prev_trigger_1 = false;
+                keys[key].debounce_1 = current_time;
+                keys[key].state = GOING_UP;
+
+                save_key_time(key);
+            }
+        }
     }
-#endif
-
-#ifdef NORMAL_MODE
-    for (int i = 0; i < KEY_COUNT; i++) {
-        if (!keys[i].trigger_0 && !keys[i].trigger_1) {
-            // Both triggers off
-            if (keys[i].prev_trigger_0) {
-                // trigger_0 is now off
-                if (keys[i].debounce < (current_time - TIME_DEBOUNCE)) {
-                    save_time_difference(i);
-
-                    usbMIDI.sendNoteOff(i + MIDI_KEY_OFFSET, calculate_midi_noteoff_velocity(i),
-                        MIDI_CHANNEL);
-                }
-            }
-        }
-
-        else if (keys[i].trigger_0 && !keys[i].trigger_1) { // trigger_0 pressed
-            if (!keys[i].prev_trigger_0) {
-                // trigger_0 is now pressed, key is going down.
-                if (keys[i].debounce < (current_time - TIME_DEBOUNCE)) {
-                    save_key_time(i);
-                }
-            }
-            if (keys[i].prev_trigger_1) {
-                // trigger_1 is now off, key is going up
-                if (keys[i].debounce < (current_time - TIME_DEBOUNCE)) {
-                    save_key_time(i);
-                }
-            }
-        }
-
-        else if (keys[i].trigger_0 && keys[i].trigger_1) {
-            if (!keys[i].prev_trigger_1) {
-                // trigger_0 and trigger_1 are now pressed
-                if (keys[i].debounce < (current_time - TIME_DEBOUNCE)) {
-                    keys[i].debounce = current_time;
-
-                    save_time_difference(i);
-
-                    uint16_t velocity = calculate_midi_noteon_velocity(i);
-
-                    usbMIDI.sendControlChange(MIDI_HIGHRES_CC, (uint8_t)(velocity & 0x7f), MIDI_CHANNEL);
-                    usbMIDI.sendNoteOn(i + MIDI_KEY_OFFSET, (uint8_t)(velocity >> 7),
-                        MIDI_CHANNEL);
-                }
-            }
-        }
-
-        keys[i].prev_trigger_0 = keys[i].trigger_0;
-        keys[i].prev_trigger_1 = keys[i].trigger_1;
-    }
-#endif
 
     last_time = current_time;
 }
